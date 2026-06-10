@@ -1,0 +1,51 @@
+name: Build DMG
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build DeviceDeck.app and DMG
+    runs-on: macos-15
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Show Swift version
+        run: swift --version
+
+      - name: Build app bundle
+        run: ./scripts/build-app.sh
+
+      - name: Create DMG
+        run: |
+          STAGE="$(mktemp -d)"
+          cp -R build/DeviceDeck.app "$STAGE/"
+          ln -s /Applications "$STAGE/Applications"
+          hdiutil create -volname "DeviceDeck" -srcfolder "$STAGE" -ov -format UDZO DeviceDeck.dmg
+          rm -rf "$STAGE"
+          ls -lh DeviceDeck.dmg
+
+      - name: Upload DMG artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: DeviceDeck-dmg
+          path: DeviceDeck.dmg
+          if-no-files-found: error
+
+      - name: Attach DMG to release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" DeviceDeck.dmg \
+            --title "DeviceDeck ${GITHUB_REF_NAME}" \
+            --generate-notes
