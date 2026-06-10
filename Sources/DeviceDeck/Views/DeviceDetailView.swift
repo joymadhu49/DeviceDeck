@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import Foundation
 import UniformTypeIdentifiers
 
 struct DeviceDetailView: View {
@@ -14,46 +15,46 @@ struct DeviceDetailView: View {
     @State private var showFileImporter = false
     @State private var showAirDropImporter = false
     @State private var isDropTargeted = false
+    @State private var lastInfoUpdate: Date?
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 24) {
+            VStack(alignment: .leading, spacing: 20) {
                 switch content {
                 case .local(let info):
-                    DeviceHeader(
-                        symbol: info.kind.symbolName,
-                        name: info.name,
-                        subtitle: "\(info.model) · \(info.osVersion)",
-                        state: nil
-                    )
-                    localActions
+                    localHeader(info)
                     InfoDashboard(info: info)
 
                 case .peer(let peer):
-                    DeviceHeader(
-                        symbol: (peer.info?.kind ?? .unknown).symbolName,
-                        name: peer.displayName,
-                        subtitle: peerSubtitle(peer),
-                        state: peer.state
-                    )
-                    peerActions(peer)
+                    peerHeader(peer)
 
                     if peer.state == .connected {
                         dropZone(for: peer)
                         if let info = peer.info {
                             InfoDashboard(info: info)
+                            updatedFooter(peer)
                         } else {
                             waitingForInfo(peer)
                         }
                     } else {
-                        notConnectedView(peer)
+                        notConnectedHint(peer)
                     }
                 }
             }
-            .padding(24)
+            .padding(20)
+            .frame(maxWidth: 760, alignment: .leading)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .animation(.default, value: dropZoneVisible)
+        .onPasteCommand(of: [.fileURL]) { _ in
+            pasteFilesToConnectedPeer()
+        }
+        .onAppear {
+            if peerInfo != nil { lastInfoUpdate = Date() }
+        }
+        .onChange(of: peerInfo) { _, newValue in
+            if newValue != nil { lastInfoUpdate = Date() }
+        }
         .fileImporter(
             isPresented: $showFileImporter,
             allowedContentTypes: [.item],
@@ -61,7 +62,7 @@ struct DeviceDetailView: View {
         ) { result in
             guard case .peer(let peer) = content,
                   case .success(let urls) = result else { return }
-            service.sendFiles(urls, to: peer)
+            sendFiles(urls, to: peer)
         }
         .fileImporter(
             isPresented: $showAirDropImporter,
@@ -73,9 +74,65 @@ struct DeviceDetailView: View {
         }
     }
 
+    // MARK: Derived state
+
+    private var peerInfo: DeviceInfo? {
+        if case .peer(let peer) = content { return peer.info }
+        return nil
+    }
+
     private var dropZoneVisible: Bool {
         if case .peer(let peer) = content { return peer.state == .connected }
         return false
+    }
+
+    // MARK: Header
+
+    private func localHeader(_ info: DeviceInfo) -> some View {
+        HStack(alignment: .center, spacing: 16) {
+            DeviceAvatar(kind: info.kind, state: nil, size: 64)
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(info.name)
+                    .font(.title2.bold())
+                    .lineLimit(1)
+                Text("This Mac · \(info.model) · \(info.osVersion)")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+
+            Spacer(minLength: 16)
+
+            Button {
+                showAirDropImporter = true
+            } label: {
+                Label("AirDrop…", systemImage: "square.and.arrow.up")
+            }
+            .buttonStyle(.bordered)
+            .help("Share files with nearby devices using AirDrop")
+        }
+    }
+
+    private func peerHeader(_ peer: PeerDevice) -> some View {
+        HStack(alignment: .center, spacing: 16) {
+            DeviceAvatar(kind: peer.info?.kind ?? .unknown, state: peer.state, size: 64)
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(peer.displayName)
+                    .font(.title2.bold())
+                    .lineLimit(1)
+                Text(peerSubtitle(peer))
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                StatusCapsule(state: peer.state)
+            }
+
+            Spacer(minLength: 16)
+
+            peerActions(peer)
+        }
     }
 
     private func peerSubtitle(_ peer: PeerDevice) -> String {
@@ -87,108 +144,141 @@ struct DeviceDetailView: View {
 
     // MARK: Actions
 
-    private var localActions: some View {
-        HStack(spacing: 10) {
-            Button {
-                showAirDropImporter = true
-            } label: {
-                Label("AirDrop…", systemImage: "square.and.arrow.up")
-            }
-            .help("Share files with nearby devices using AirDrop")
-            Spacer()
-        }
-        .controlSize(.large)
-    }
-
+    /// Exactly one `.borderedProminent` button is visible at a time:
+    /// "Connect" while not connected, "Send Files…" once connected.
+    @ViewBuilder
     private func peerActions(_ peer: PeerDevice) -> some View {
-        HStack(spacing: 10) {
-            if peer.state == .connected {
+        HStack(spacing: 8) {
+            switch peer.state {
+            case .connected:
                 Button {
-                    showFileImporter = true
-                } label: {
-                    Label("Send Files…", systemImage: "doc.badge.arrow.up")
-                }
-                .buttonStyle(.borderedProminent)
-
-                Button {
-                    if let text = NSPasteboard.general.string(forType: .string), !text.isEmpty {
-                        service.sendClipboard(text, to: peer)
-                    }
+                    sendClipboard(to: peer)
                 } label: {
                     Label("Send Clipboard", systemImage: "doc.on.clipboard")
                 }
+                .buttonStyle(.bordered)
+                .help("Send your current clipboard text to \(peer.displayName)")
 
                 Button {
                     showAirDropImporter = true
                 } label: {
                     Label("AirDrop…", systemImage: "square.and.arrow.up")
                 }
+                .buttonStyle(.bordered)
+                .help("Share files with nearby devices using AirDrop")
 
                 Button {
                     service.requestInfo(from: peer)
                 } label: {
                     Label("Refresh Info", systemImage: "arrow.clockwise")
                 }
-            } else if peer.state == .connecting {
+                .buttonStyle(.bordered)
+                .help("Request fresh device info from \(peer.displayName)")
+
+                Button {
+                    showFileImporter = true
+                } label: {
+                    Label("Send Files…", systemImage: "doc.badge.arrow.up")
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.large)
+                .help("Choose files to send to \(peer.displayName)")
+
+            case .connecting:
+                ProgressView()
+                    .controlSize(.small)
                 Button {
                 } label: {
                     Label("Connecting…", systemImage: "link")
                 }
+                .buttonStyle(.bordered)
+                .controlSize(.large)
                 .disabled(true)
+                .help("Connecting to \(peer.displayName)…")
 
-                ProgressView()
-                    .controlSize(.small)
-            } else {
+            case .discovered, .disconnected:
                 Button {
                     service.invite(peer)
                 } label: {
                     Label("Connect", systemImage: "link")
                 }
                 .buttonStyle(.borderedProminent)
+                .controlSize(.large)
+                .help("Connect to \(peer.displayName)")
             }
-            Spacer()
         }
-        .controlSize(.large)
     }
 
     // MARK: Connection states
 
-    private func notConnectedView(_ peer: PeerDevice) -> some View {
+    private func notConnectedHint(_ peer: PeerDevice) -> some View {
         ContentUnavailableView {
-            Label("Not Connected", systemImage: "link.badge.plus")
+            Label("Not Connected", systemImage: "personalhotspot")
         } description: {
-            Text("Connect to \(peer.displayName) to view its dashboard and share files.")
+            Text("Connect to see live info and send files.")
         }
         .frame(maxWidth: .infinity)
-        .padding(.top, 24)
+        .padding(.top, 20)
     }
 
     private func waitingForInfo(_ peer: PeerDevice) -> some View {
-        HStack(spacing: 10) {
+        HStack(spacing: 8) {
             ProgressView()
                 .controlSize(.small)
             Text("Waiting for device info…")
+                .font(.callout)
                 .foregroundStyle(.secondary)
             Button("Request Again") {
                 service.requestInfo(from: peer)
             }
+            .buttonStyle(.borderless)
             .controlSize(.small)
         }
         .padding(.vertical, 4)
     }
 
+    // MARK: Last updated
+
+    private func updatedFooter(_ peer: PeerDevice) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: "clock")
+                .foregroundStyle(.secondary)
+                .font(.caption)
+            Text(updatedText)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Button("Refresh Info") {
+                service.requestInfo(from: peer)
+            }
+            .buttonStyle(.borderless)
+            .controlSize(.small)
+            .help("Request fresh device info from \(peer.displayName)")
+        }
+    }
+
+    private var updatedText: String {
+        guard let date = lastInfoUpdate else { return "Updated just now" }
+        if Date().timeIntervalSince(date) < 60 {
+            return "Updated just now"
+        }
+        return "Updated \(date.formatted(.relative(presentation: .named)))"
+    }
+
     // MARK: Drop zone
 
     private func dropZone(for peer: PeerDevice) -> some View {
-        VStack(spacing: 10) {
+        VStack(spacing: 8) {
             Image(systemName: "arrow.down.doc")
-                .font(.system(size: 30, weight: .light))
-                .foregroundStyle(isDropTargeted ? Color.accentColor : .secondary)
-            VStack(spacing: 2) {
-                Text("Drop files to send")
+                .font(.largeTitle.weight(.light))
+                .symbolRenderingMode(.hierarchical)
+                .symbolEffect(.bounce, value: isDropTargeted)
+                .foregroundStyle(isDropTargeted ? Color.accentColor : Color.secondary)
+
+            VStack(spacing: 4) {
+                Text("Drop files to send to \(peer.displayName)")
                     .font(.callout.weight(.medium))
-                    .foregroundStyle(isDropTargeted ? Color.accentColor : .primary)
-                Text("Files go straight to \(peer.displayName)")
+                    .foregroundStyle(isDropTargeted ? Color.accentColor : Color.primary)
+                Text("or paste with ⌘V")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -196,74 +286,51 @@ struct DeviceDetailView: View {
         .frame(maxWidth: .infinity, minHeight: 120)
         .background(
             RoundedRectangle(cornerRadius: Theme.cardCornerRadius, style: .continuous)
-                .fill(isDropTargeted ? Color.accentColor.opacity(0.10) : Color.clear)
+                .fill(Color.accentColor.opacity(isDropTargeted ? 0.08 : 0))
         )
         .overlay(
             RoundedRectangle(cornerRadius: Theme.cardCornerRadius, style: .continuous)
                 .strokeBorder(
-                    isDropTargeted ? Color.accentColor : Color.secondary.opacity(0.35),
-                    style: StrokeStyle(lineWidth: 1.5, dash: [6, 4])
+                    Color.accentColor.opacity(isDropTargeted ? 1 : 0.45),
+                    style: StrokeStyle(lineWidth: 2, dash: [6])
                 )
         )
-        .scaleEffect(isDropTargeted ? 1.015 : 1)
+        .scaleEffect(isDropTargeted ? 1.01 : 1)
+        .animation(.spring(duration: 0.3), value: isDropTargeted)
         .dropDestination(for: URL.self) { urls, _ in
             guard !urls.isEmpty else { return false }
-            service.sendFiles(urls, to: peer)
+            sendFiles(urls, to: peer)
             return true
         } isTargeted: { targeted in
             isDropTargeted = targeted
         }
-        .animation(.easeInOut(duration: 0.15), value: isDropTargeted)
+        .accessibilityLabel("Drop files to send to \(peer.displayName)")
     }
-}
 
-// MARK: - Header
+    // MARK: Sending helpers
 
-private struct DeviceHeader: View {
-    let symbol: String
-    let name: String
-    let subtitle: String
-    let state: PeerConnectionState?
+    private func sendFiles(_ urls: [URL], to peer: PeerDevice) {
+        guard !urls.isEmpty else { return }
+        service.sendFiles(urls, to: peer)
+        let what = urls.count == 1 ? urls[0].lastPathComponent : "\(urls.count) files"
+        ToastCenter.shared.show("Sending \(what) to \(peer.displayName)", symbol: "paperplane.fill")
+    }
 
-    var body: some View {
-        HStack(spacing: 16) {
-            Image(systemName: symbol)
-                .font(.system(size: 34, weight: .medium))
-                .foregroundStyle(.white)
-                .frame(width: 68, height: 68)
-                .background(
-                    RoundedRectangle(cornerRadius: 16, style: .continuous)
-                        .fill(Theme.brandGradient)
-                )
-                .shadow(color: .blue.opacity(0.25), radius: 6, y: 3)
-
-            VStack(alignment: .leading, spacing: 5) {
-                Text(name)
-                    .font(.title.bold())
-                    .lineLimit(1)
-                Text(subtitle)
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-            }
-
-            Spacer()
-
-            if let state {
-                StatusCapsule(state: state)
-            } else {
-                HStack(spacing: 5) {
-                    Circle()
-                        .fill(.blue)
-                        .frame(width: 7, height: 7)
-                    Text("This Mac")
-                        .font(.caption.weight(.medium))
-                        .foregroundStyle(.blue)
-                }
-                .padding(.horizontal, 9)
-                .padding(.vertical, 4)
-                .background(.blue.opacity(0.14), in: Capsule())
-            }
+    private func sendClipboard(to peer: PeerDevice) {
+        guard let text = NSPasteboard.general.string(forType: .string), !text.isEmpty else {
+            ToastCenter.shared.show("Clipboard has no text to send", symbol: "doc.on.clipboard")
+            return
         }
+        service.sendClipboard(text, to: peer)
+        ToastCenter.shared.show("Clipboard sent to \(peer.displayName)", symbol: "doc.on.clipboard")
+    }
+
+    /// ⌘V — read file URLs off the general pasteboard and send them.
+    private func pasteFilesToConnectedPeer() {
+        guard case .peer(let peer) = content, peer.state == .connected else { return }
+        let options: [NSPasteboard.ReadingOptionKey: Any] = [.urlReadingFileURLsOnly: true]
+        guard let urls = NSPasteboard.general.readObjects(forClasses: [NSURL.self], options: options) as? [URL],
+              !urls.isEmpty else { return }
+        sendFiles(urls, to: peer)
     }
 }

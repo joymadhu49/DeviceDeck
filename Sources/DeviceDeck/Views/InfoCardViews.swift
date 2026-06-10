@@ -1,24 +1,26 @@
 import SwiftUI
+import AppKit
 
 // MARK: - Dashboard grid
 
 struct InfoDashboard: View {
     let info: DeviceInfo
 
-    private let columns = [GridItem(.adaptive(minimum: 200, maximum: 320), spacing: 14)]
+    private let columns = [GridItem(.adaptive(minimum: 220), spacing: 16)]
 
     var body: some View {
-        LazyVGrid(columns: columns, alignment: .leading, spacing: 14) {
-            SystemCard(info: info)
+        LazyVGrid(columns: columns, alignment: .leading, spacing: 16) {
             if info.totalDiskBytes != nil {
                 StorageCard(info: info)
-            }
-            if info.memoryBytes != nil {
-                MemoryCard(info: info)
             }
             if info.batteryLevel != nil {
                 BatteryCard(info: info)
             }
+            if info.memoryBytes != nil {
+                MemoryCard(info: info)
+            }
+            SystemCard(info: info)
+            NetworkCard(info: info)
         }
     }
 }
@@ -36,21 +38,21 @@ private struct InfoCard<Content: View>: View {
             HStack(spacing: 8) {
                 IconChip(systemImage: symbol, tint: tint, side: 24, cornerRadius: 6)
                 Text(title.uppercased())
-                    .font(.caption.weight(.semibold))
+                    .font(.caption2.weight(.semibold))
                     .foregroundStyle(.secondary)
                     .kerning(0.6)
             }
             content
         }
-        .padding(14)
-        .frame(maxWidth: .infinity, minHeight: 132, alignment: .topLeading)
+        .padding(16)
+        .frame(maxWidth: .infinity, minHeight: 110, alignment: .topLeading)
         .background(
             RoundedRectangle(cornerRadius: Theme.cardCornerRadius, style: .continuous)
-                .fill(.quinary)
+                .fill(Color(nsColor: .controlBackgroundColor))
         )
         .overlay(
             RoundedRectangle(cornerRadius: Theme.cardCornerRadius, style: .continuous)
-                .strokeBorder(.separator.opacity(0.5), lineWidth: 1)
+                .strokeBorder(.separator, lineWidth: 1)
         )
     }
 }
@@ -63,57 +65,31 @@ struct StorageCard: View {
     private var total: Int64 { info.totalDiskBytes ?? 0 }
     private var free: Int64 { info.freeDiskBytes ?? 0 }
     private var used: Int64 { max(total - free, 0) }
-    private var fraction: Double {
+    private var usedFraction: Double {
         total > 0 ? Double(used) / Double(total) : 0
-    }
-
-    private var fullnessTint: Color {
-        if fraction > 0.9 { return .red }
-        if fraction > 0.75 { return .orange }
-        return .green
     }
 
     var body: some View {
         InfoCard(title: "Storage", symbol: "internaldrive", tint: .purple) {
-            VStack(alignment: .leading, spacing: 8) {
-                Text("\(fraction.formatted(.percent.precision(.fractionLength(0)))) used")
-                    .font(.system(.title3, design: .rounded).weight(.semibold))
-
-                Gauge(value: fraction) {
+            HStack(spacing: 12) {
+                Gauge(value: usedFraction) {
                     EmptyView()
+                } currentValueLabel: {
+                    Text(usedFraction.formatted(.percent.precision(.fractionLength(0))))
+                        .font(.caption2)
+                        .monospacedDigit()
                 }
-                .gaugeStyle(.accessoryLinearCapacity)
-                .tint(fullnessTint)
+                .gaugeStyle(.accessoryCircularCapacity)
+                .tint(Gradient(colors: [.green, .yellow, .orange, .red]))
 
-                HStack {
-                    Text("\(formattedBytes(used)) used")
-                    Spacer()
-                    Text("\(formattedBytes(free)) free")
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(formattedBytes(free))
+                        .font(.title3.weight(.semibold))
+                        .monospacedDigit()
+                    Text("free of \(formattedBytes(total))")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
-                .font(.caption)
-                .foregroundStyle(.secondary)
-
-                Text("\(formattedBytes(total)) total")
-                    .font(.caption)
-                    .foregroundStyle(.tertiary)
-            }
-        }
-    }
-}
-
-// MARK: - Memory
-
-struct MemoryCard: View {
-    let info: DeviceInfo
-
-    var body: some View {
-        InfoCard(title: "Memory", symbol: "memorychip", tint: .teal) {
-            VStack(alignment: .leading, spacing: 6) {
-                Text(formattedBytes(info.memoryBytes ?? 0))
-                    .font(.system(.title2, design: .rounded).weight(.semibold))
-                Text("Installed RAM")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
             }
         }
     }
@@ -128,30 +104,61 @@ struct BatteryCard: View {
     private var charging: Bool { info.isCharging ?? false }
 
     private var levelTint: Color {
-        if charging { return .green }
         if level < 0.2 { return .red }
         if level < 0.4 { return .orange }
         return .green
     }
 
     var body: some View {
-        InfoCard(title: "Battery", symbol: charging ? "battery.100percent.bolt" : "battery.75percent", tint: levelTint) {
-            VStack(alignment: .leading, spacing: 8) {
-                HStack(spacing: 6) {
-                    Text(level.formatted(.percent.precision(.fractionLength(0))))
-                        .font(.system(.title2, design: .rounded).weight(.semibold))
-                    if charging {
-                        Image(systemName: "bolt.fill")
-                            .foregroundStyle(.yellow)
-                    }
-                }
+        InfoCard(
+            title: "Battery",
+            symbol: charging ? "battery.100percent.bolt" : "battery.75percent",
+            tint: levelTint
+        ) {
+            HStack(spacing: 12) {
                 Gauge(value: level) {
                     EmptyView()
+                } currentValueLabel: {
+                    Image(systemName: charging ? "bolt.fill" : "battery.100percent")
+                        .font(.caption2)
                 }
-                .gaugeStyle(.accessoryLinearCapacity)
+                .gaugeStyle(.accessoryCircularCapacity)
                 .tint(levelTint)
 
-                Text(charging ? "Charging" : "On Battery")
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(spacing: 4) {
+                        Text(level.formatted(.percent.precision(.fractionLength(0))))
+                            .font(.title3.weight(.semibold))
+                            .monospacedDigit()
+                            .contentTransition(.numericText())
+                        if charging {
+                            Image(systemName: "bolt.fill")
+                                .font(.callout)
+                                .foregroundStyle(.yellow)
+                        }
+                    }
+                    Text(charging ? "Charging" : "On Battery")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .animation(.snappy, value: level)
+        }
+    }
+}
+
+// MARK: - Memory
+
+struct MemoryCard: View {
+    let info: DeviceInfo
+
+    var body: some View {
+        InfoCard(title: "Memory", symbol: "memorychip", tint: .teal) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(formattedBytes(info.memoryBytes ?? 0))
+                    .font(.title3.weight(.semibold))
+                    .monospacedDigit()
+                Text("Installed RAM")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -175,33 +182,44 @@ struct SystemCard: View {
 
     var body: some View {
         InfoCard(title: "System", symbol: "cpu", tint: .blue) {
-            VStack(alignment: .leading, spacing: 6) {
-                row(label: "Model", value: info.model)
-                row(label: "OS", value: info.osVersion)
-                if let chip = info.cpuBrand {
-                    row(label: "Chip", value: chip)
-                }
-                if let ip = info.localIP {
-                    row(label: "IP", value: ip)
-                }
+            VStack(alignment: .leading, spacing: 4) {
+                Text(info.cpuBrand ?? info.model)
+                    .font(.title3.weight(.semibold))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Text(info.osVersion)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
                 if let uptime = uptimeText {
-                    row(label: "Uptime", value: uptime)
+                    Text("Up \(uptime)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
             }
         }
     }
+}
 
-    private func row(label: String, value: String) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 8) {
-            Text(label)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .frame(width: 50, alignment: .leading)
-            Text(value)
-                .font(.callout)
-                .lineLimit(1)
-                .truncationMode(.middle)
-                .textSelection(.enabled)
+// MARK: - Network
+
+struct NetworkCard: View {
+    let info: DeviceInfo
+
+    var body: some View {
+        InfoCard(title: "Network", symbol: "network", tint: .indigo) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(info.localIP ?? "No IP address")
+                    .font(.title3.weight(.semibold))
+                    .monospaced()
+                    .lineLimit(1)
+                    .textSelection(.enabled)
+                Text("ID \(info.id)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .textSelection(.enabled)
+            }
         }
     }
 }
